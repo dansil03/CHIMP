@@ -27,7 +27,8 @@ users = {
     'user2': 'password2',
     'maarten' : 'maarten',
     'eddy' : 'eddy',
-    'abdul' : 'abdul'
+    'abdul' : 'abdul',
+    'silas' : 'silas'
 }
 
 @app.route('/')

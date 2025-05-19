@@ -1,27 +1,18 @@
 import os
 import shutil
+import re
+from io import BytesIO
+from datetime import datetime
 from flask import Blueprint, current_app, request, Request
 from tempfile import mkdtemp
 from werkzeug.exceptions import BadRequest
 from zipfile import ZipFile, BadZipFile
-import re
 
 bp = Blueprint("dataset", __name__)
 
 
 @bp.route("/datasets")
 def get_datasets():
-    """Get a list of available datasets.
-
-    Returns
-    -------
-    A list of available datasets.
-
-    Examples
-    --------
-    curl
-        `curl http://localhost:5253/datasets`
-    """
     datastore = current_app.extensions["datastore"]
     return {
         "status": "successfully retrieved datasets",
@@ -34,22 +25,6 @@ def get_datasets():
 
 @bp.route("/datasets", methods=["POST"])
 def upload_dataset(passed_request: Request = None):
-    """Upload a dataset as a zip file, which is made available for training.
-
-    Parameters
-    ----------
-    passed_request : Request
-        A overwrite to support the (depricated) /model/train and /model/calibrate endpoints
-
-    Returns
-    -------
-    Whether or not the upload was successful
-
-    Examples
-    --------
-    curl
-        `curl -X POST -F "file=@/path/to/zipfile.zip" -F "dataset_name=Example" http://localhost:5253/datasets`
-    """
     current_request = request
     if passed_request:
         current_request = passed_request  # pragma: no cover
@@ -62,7 +37,6 @@ def upload_dataset(passed_request: Request = None):
     print(file.filename)
     print(file.filename.endswith(".zip"))
 
-
     if not file.filename.endswith(".zip"):
         raise BadRequest("File should be a zip")
 
@@ -74,6 +48,7 @@ def upload_dataset(passed_request: Request = None):
         raise BadRequest(
             "Dataset name ('dataset_name') should only contain characters allowed in path strings"
         )
+
     datastore = current_app.extensions["datastore"]
     if dataset_name in [
         ds.replace("/", "") for ds in datastore.list_from_datastore("", recursive=False)
@@ -98,3 +73,5 @@ def upload_dataset(passed_request: Request = None):
 
     shutil.rmtree(tmpdir)
     return {"status": "successfully uploaded dataset"}
+
+

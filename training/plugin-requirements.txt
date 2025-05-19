@@ -14,3 +14,10 @@ onnxruntime
 tensorflow
 scikit-learn
 numpy
+
+# AL_test
+torch
+torchvision
+Pillow
+tqdm
+

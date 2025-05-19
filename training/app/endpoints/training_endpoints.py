@@ -87,6 +87,7 @@ def start_task(plugin_name: str, passed_request=None):
     worker_manager: WorkerManager = current_app.extensions["worker_manager"]
     plugin_info = worker_manager.get_plugin_info(plugin_name)
     if not plugin_info:
+        current_app.logger.warning(f"Plugin '{plugin_name}' not found when attempting to start task.")
         abort(404)
 
     # Check datasets

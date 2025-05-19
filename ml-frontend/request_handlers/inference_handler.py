@@ -53,92 +53,170 @@ def _process_image(data):
 
     return img_processor.get_image_blob()
 
-
 def sanitize_timestamp(timestamp):
     return timestamp.replace("T", "_").replace(":", "-").replace(".", "-")
 
-  
 def _process_video(data):
-    print("Processing video blobs")
+    print("[START] Processing video blobs")
+    
+    # Load the face detection cascade file
     cascade_file = os.path.join(os.getcwd(), 'static', 'cascades', 'frontalface_default_haarcascade.xml')
     face_cascade = cv2.CascadeClassifier(cascade_file)
-    
-    EXPERIMENT_NAME=environ.get("EXPERIMENT_NAME")
-    PLUGIN_NAME="Emotion+Recognition"
-    TRAINING_SERVER_URL=environ.get("TRAINING_SERVER_URL")
+
+    # Retrieve environment variables and construct the dataset upload URL
+    EXPERIMENT_NAME = environ.get("EXPERIMENT_NAME")
+    #PLUGIN_NAME = "Emotion+Recognition" if not is_pool else "Active+Learning"
+    TRAINING_SERVER_URL = environ.get("TRAINING_SERVER_URL")
     url = TRAINING_SERVER_URL + "/datasets"
 
+    # Extract data from the incoming request
     user_id = data['user_id'] if data['user_id'] != '' else request.sid
-    username =data['username']
+    username = data['username']
     video_blobs = data['image_blobs']
     emotions = data['emotions']
-    timestamps = data['timestamps']
-    
-    # send to datastore
-    # Create a BytesIO object to hold the zip file in memory, don't write to disk
+    timestamps = data['timestamps'] if 'timestamps' in data else []
+    is_pool = data.get('is_pool', False)
+
+    print(f"Incoming data | User ID: {user_id}, Username: {username}, Is Pool: {is_pool}")
+    print(f"Number of video blobs: {len(video_blobs)} | Emotions: {emotions} | Timestamps: {len(timestamps)}")
+
+    # Generate default timestamps if missing or mismatched
+    if not timestamps or len(timestamps) != len(video_blobs):
+        print("Timestamps are missing or do not match the number of video blobs. Generating default timestamps.")
+        timestamps = [f"{datetime.utcnow().isoformat()}-{i}" for i in range(len(video_blobs))]
+
+    # Create a unique ID for the calibration dataset
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d-%H-%M-%S-%f")[:-3]
+    unique_id = f"{username}_{timestamp}_{user_id}"
+    clean_id = f"calibration_{unique_id}"
     zip_buffer = BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:    
-        for video_blob, emotion, timestamp in zip(video_blobs, emotions, timestamps):
-            timestamp = sanitize_timestamp(timestamp)
-            
+    zip_buffer.name = clean_id
+
+    total_frames_detected = 0
+    total_images_written = 0
+ 
+    # Process each video blob and extract face images
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        global_frame_counter = 0 
+        for blob_index, (video_blob, emotion, ts) in enumerate(zip(video_blobs, emotions, timestamps)):
+            blob_size = len(video_blob)
+            print(f"\n[INFO] Processing blob {blob_index+1}/{len(video_blobs)} | Emotion: {emotion} | Size: {blob_size} bytes | Timestamp: {ts}")
+            if blob_size < 1000:
+                print(f"[WARNING] Blob {blob_index+1} is very small — possible recording issue.")
+
+            # Sanitize the timestamp for use in filenames
+            ts = sanitize_timestamp(ts)
             video_stream = BytesIO(video_blob)
             video_stream.seek(0)
-            video_array = iio.imread(video_stream, plugin='pyav')
 
-            recording_id = f"{username}_{emotion}_{timestamp}_{user_id}_recording"
-            cnt=0
+            try:
+                # Read the video blob into a frame array
+                video_array = iio.imread(video_stream, plugin='pyav')
+                print(f"[INFO] Loaded {len(video_array)} frames from blob.")
+            except Exception as e:
+                print(f"[ERROR] Failed to read video blob {blob_index+1}: {e}")
+                continue
+
+            # Process each frame in the video
             for i, img in enumerate(video_array):
-                # Get gray-scale version of the image, detect each face, and get for each face an emotion prediction.
-                grey_frame = cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
-                faces = face_cascade.detectMultiScale(grey_frame, 1.3, 5)
-                if len(faces) != 1:
-                    continue #only process if exactly one face is detected, other cases not supported
-                else:
-                    for index, (x, y, width, height) in enumerate(faces):
-                        image = cv2.resize(grey_frame[y:y+height, x:x+width], (96, 96))
+                try:
+                    # Convert the frame to grayscale
+                    grey_frame = cv2.cvtColor(img, cv2.COLOR_RGBA2GRAY)
+                except Exception as e:
+                    print(f"[WARNING] Failed to convert frame {i} to grayscale: {e}")
+                    continue
 
+                # Detect faces in the frame
+                faces = face_cascade.detectMultiScale(grey_frame, 1.3, 5)
+                print(f"[DEBUG] Frame {i}: {len(faces)} face(s) detected")
+
+                # Skip frames with no or multiple faces
+                if len(faces) != 1:
+                    print(f"[SKIP] Frame {i}: Skipping due to face count != 1")
+                    continue
+
+                # Process each detected face
+                for index, (x, y, width, height) in enumerate(faces):
+                    try:
+                        # Crop, resize, and save the face image
+                        image = cv2.resize(grey_frame[y:y+height, x:x+width], (96, 96))
                         image = Image.fromarray(image.astype('uint8'))
-                        # Save the image to a BytesIO buffer
                         buffer = BytesIO()
                         image.save(buffer, format="PNG")
                         buffer.seek(0)
-                        
-                        #define "file" name and data
-                        name = os.path.join(f'img_{emotion}_{i:04d}.png')
-                        zip_path = os.path.join(os.path.join("train", emotion), name)
+
+                        # Create a unique filename for the image
+                        if is_pool:
+                            name = f'img_pool_{global_frame_counter:05d}.png'
+                            zip_path = os.path.join("pool", name)
+                        else:
+                            name = f'img_{emotion}_{global_frame_counter:05d}.png'
+                            zip_path = os.path.join("train", emotion, name)
+
+                        global_frame_counter += 1
+
+
+                        # Write the image to the zip file
                         zipf.writestr(zip_path, buffer.getvalue())
-                        cnt=cnt+1
+                        total_images_written += 1
+                        print(f"[WRITE] Wrote image to zip: {zip_path}")
+                    except Exception as e:
+                        print(f"[ERROR] Failed to process face crop in frame {i}: {e}")
 
-            print("processing blob with emotion ", emotion, " detected 1 face in nframe: ", cnt)
-    
+                total_frames_detected += 1
+
+    # Log summary of processing
+    zip_size = zip_buffer.getbuffer().nbytes
+    print(f"\n[SUMMARY] Total frames processed with faces: {total_frames_detected}")
+    print(f"[SUMMARY] Total images written to zip: {total_images_written}")
+    print(f"[SUMMARY] Final ZIP file size: {zip_size} bytes")
+
+    # Prepare the zip file for upload
     zip_buffer.seek(0)
+    files = {"file": (clean_id + '.zip', zip_buffer.getvalue(), 'application/zip')}
 
-    #clean the dataset name as non alphanumeric characters are not allowed by the training and minio modules
-    clean_id = re.sub(r'[<>:"/\\|?*]', '', f"calibration_{username}_{timestamp}_{user_id}")
-    zip_buffer.name=clean_id
-    files = {}
-    files["file"] = (clean_id + '.zip', zip_buffer.getvalue(), 'application/zip')
+    print("[UPLOAD] Sending zip to dataset_name:", clean_id)
+    try:
+        # Upload the zip file to the server
+        response = requests.request('POST', url=url, data={"dataset_name": clean_id}, files=files)
+        print(f"[UPLOAD RESPONSE] Status {response.status_code}")
+        print(f"[UPLOAD RESPONSE] Body: {response.json()}")
+    except Exception as e:
+        print(f"[ERROR] Upload failed: {e}")
+        return {"error": str(e)}, 500
 
-    print("Sending image zip to dataset_name: ", clean_id)
-
-    response = requests.request('POST',  url=url, data={"dataset_name" : clean_id}, files=files)
-    print(response.json())
-    if response.status_code!=200:
+    # Handle upload errors
+    if response.status_code != 200:
         return response.json(), response.status_code
-        #raise BadRequest("Could not upload dataset zip")
 
-    form = dict()
-    form["calibration_id"] = username + '_' + user_id
-    form["calibrate"] = True
-    form["experiment_name"] = EXPERIMENT_NAME
-    form["datasets"] = json.dumps({"train": "fer2013", "calibration" : clean_id})
+    # Prepare dataset paths for calibration
+    datasets = {}
+    if is_pool:
+       # datasets["pool"] = f"{clean_id}/pool"
+       datasets["pool"] = clean_id
+    else:
+        datasets["train"] = f"{clean_id}/train"
 
-    print("Requesting model calibrations: ", form)
+    PLUGIN_NAME = "Emotion+Recognition" if not is_pool else "Active+Learning"
 
-    url = TRAINING_SERVER_URL + "/tasks/run/" + PLUGIN_NAME
-    response = requests.request('POST',  url=url, data=form)
-    print(response.json())
+
+    
+    # Prepare the form data for calibration task
+    form = {
+        "calibration_id": f"{username}_{user_id}",  # Unique calibration identifier
+        "calibrate": True,                          # Indicate calibration mode
+        "experiment_name": EXPERIMENT_NAME,         # Experiment name from environment
+        "datasets": json.dumps(datasets)            # Datasets paths as JSON string
+    }
+
+    print(f"[TASK] Sending task request to plugin '{PLUGIN_NAME}' with form data:", form)
+    # Send POST request to trigger calibration task on the training server
+    response = requests.request('POST', url=TRAINING_SERVER_URL + "/tasks/run/" + PLUGIN_NAME, data=form)
+    print(f"[TASK RESPONSE] Status {response.status_code}: {response.json()}")
+
+    # Return the response from the training server
     return response.json(), response.status_code
+
 
 def _train():
     PLUGIN_NAME="Emotion+Recognition"
