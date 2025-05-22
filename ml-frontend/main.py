@@ -43,6 +43,18 @@ def kali_page():
         return render_template('kali.html', username=session['username'])
     return redirect(url_for('login'))
 
+@app.route('/unlabeled_overview')
+def unlabeled_overview_page():
+    if 'username' in session:
+        return render_template('unlabeled_overview.html', username=session['username'])
+    return redirect(url_for('login'))
+
+@app.route('/label')
+def label_page():
+    if 'username' in session:
+        return render_template('label.html', username=session['username'])
+    return redirect(url_for('login'))
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
