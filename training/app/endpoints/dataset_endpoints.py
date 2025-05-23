@@ -75,3 +75,49 @@ def upload_dataset(passed_request: Request = None):
     return {"status": "successfully uploaded dataset"}
 
 
+@bp.route("/datasets/<path:object_path>")
+def get_dataset_file(object_path):
+    datastore = current_app.extensions["datastore"]
+    data = datastore.load_object_to_memory(object_path)
+
+    if data is None:
+        return {"error": "File not found"}, 404
+
+    # Probeer te detecteren of het een JSON-bestand is
+    if object_path.endswith(".json"):
+        try:
+            import json
+            return json.loads(data.read())
+        except Exception as e:
+            return {"error": f"Invalid JSON: {str(e)}"}, 500
+
+    # Anders gewoon raw bestand teruggeven (optioneel)
+    return current_app.response_class(
+        data.getvalue(), mimetype="application/octet-stream"
+    )
+
+
+
+@bp.route("/label_image", methods=["POST"])
+def label_image():
+    dataset = request.form.get("dataset_name")
+    emotion = request.form.get("emotion")
+    file = request.files.get("file")
+
+    if not all([dataset, emotion, file]):
+        return {"error": "Missing data"}, 400
+
+    if file.filename == "":
+        return {"error": "No file selected"}, 400
+
+    from flask import current_app
+    datastore = current_app.extensions["datastore"]
+
+    label_path = f"{dataset}/training/{emotion}/{file.filename}"
+    buffer = BytesIO(file.read())
+    buffer.seek(0)
+
+    datastore.store_object(label_path, buffer, file.filename)
+
+    return {"status": "label saved", "path": label_path}
+

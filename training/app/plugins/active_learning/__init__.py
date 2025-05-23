@@ -77,7 +77,7 @@ class ActiveLearningPlugin(BasePlugin):
         self._datastore.load_folder_to_filesystem(dataset_name, pool_dir)
 
         print("Loading images...")
-        X_pool = self.load_images_from_folder(pool_dir)
+        X_pool, filenames = self.load_images_from_folder(pool_dir)
         print(f"{X_pool.shape[0]} afbeeldingen geladen.")
 
         X_pool = X_pool / 255.0
@@ -89,17 +89,11 @@ class ActiveLearningPlugin(BasePlugin):
         selected_indices = [int(i) for i in selected_indices]
         print(f"Geselecteerde indices (converted to int): {selected_indices}")
 
-        # Opslaan als selection.json
-        filenames = sorted([
-            f for f in os.listdir(pool_dir)
-            if f.lower().endswith((".png", ".jpg", ".jpeg"))
-        ])
-
         selection_data = {
             "selected_indices": selected_indices,
             "selected_filenames": [filenames[i] for i in selected_indices],
             "timestamp": datetime.datetime.now().isoformat(),
-            "total": len(X_pool)
+            "total": len(selected_indices)
         }
 
         selection_dir = os.path.join(temp_dir, "selection")
@@ -109,27 +103,35 @@ class ActiveLearningPlugin(BasePlugin):
         with open(selection_path, "w") as f:
             json.dump(selection_data, f)
 
-        self._datastore.upload_folder_to_datastore(
-            folder_path=selection_dir,
-            dataset_name=dataset_name,
-            object_name="selection"
+        self._datastore.store_file_or_folder(
+            target_path=os.path.join(dataset_name, "selection"),
+            src_path=selection_dir
         )
 
         return selected_indices
 
+
     def load_images_from_folder(self, folder_path):
         import cv2
         image_list = []
+        filenames = []
         image_height = self.config["image_height"]
         image_width = self.config["image_width"]
 
+        # Verzamel en sorteer paden
+        image_paths = []
         for root, _, files in os.walk(folder_path):
             for file in files:
                 if file.lower().endswith((".png", ".jpg", ".jpeg")):
-                    img_path = os.path.join(root, file)
-                    img = cv2.imread(img_path, cv2.IMREAD_COLOR)
-                    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    img = cv2.resize(img, (image_width, image_height))
-                    image_list.append(img)
+                    image_paths.append(os.path.join(root, file))
+        image_paths.sort()
 
-        return np.array(image_list)
+        for img_path in image_paths:
+            img = cv2.imread(img_path, cv2.IMREAD_COLOR)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (image_width, image_height))
+            image_list.append(img)
+            filenames.append(os.path.relpath(img_path, folder_path))
+
+        return np.array(image_list), filenames
+
